@@ -8,7 +8,7 @@ from airflow.utils.email import send_email
 from datetime import datetime, timedelta
 from google.cloud import storage
 
-# Função de callback para enviar e-mail em caso de falha
+# Configurações de e-mail para falhas
 def alert_email_on_failure(context):
     dag_id = context.get('dag').dag_id
     task_id = context.get('task_instance').task_id
@@ -27,96 +27,89 @@ def alert_email_on_failure(context):
     """
     send_email(to=email, subject=subject, html_content=body)
 
-# Função principal da DAG Bronze
-def fetch_and_check_breweries():
-    log_messages = []
-    log_messages.append(f"Execução da DAG: {datetime.utcnow().isoformat()}")
+# Inicializa variáveis globais
+url = "https://api.openbrewerydb.org/breweries"
+client = storage.Client()
+bucket_name = 'bucket-case-abinbev'
+blob_name = 'data/bronze/breweries_raw.json'
+log_messages = []
 
-    try:
-        # Definindo o endpoint e verificando atualização
-        url = "https://api.openbrewerydb.org/breweries"
-        response = requests.head(url)
-        response.raise_for_status()
+def check_last_modified():
+    # Verifica o cabeçalho Last-Modified
+    response = requests.head(url)
+    response.raise_for_status()
+    last_modified = response.headers.get("Last-Modified")
+    
+    if last_modified:
+        last_modified_date = datetime.strptime(last_modified, "%a, %d %b %Y %H:%M:%S %Z")
+        log_messages.append(f"Verificação usando Last-Modified: {last_modified}")
+        
+        # Conexão com o bucket e blob do GCS
+        bucket = client.get_bucket(bucket_name)
+        blob = bucket.blob(blob_name)
 
-        # Conexão com o GCS
-        client = storage.Client()
-        bucket = client.get_bucket('bucket-case-abinbev')
-        blob = bucket.blob('data/bronze/breweries_raw.json')
-
-        # Tentativa de verificação pelo cabeçalho Last-Modified
-        last_modified = response.headers.get("Last-Modified")
-        if last_modified:
-            last_modified_date = datetime.strptime(last_modified, "%a, %d %b %Y %H:%M:%S %Z")
-            log_messages.append(f"Tentativa de verificação de atualização usando Last-Modified: {last_modified}")
-
-            # Verificação de metadados existentes no blob do GCS
-            if blob.exists() and blob.metadata:
-                gcs_last_update = blob.metadata.get("last_update")
-                if gcs_last_update:
-                    gcs_last_update_date = datetime.strptime(gcs_last_update, "%Y-%m-%dT%H:%M:%SZ")
-                    if last_modified_date <= gcs_last_update_date:
-                        log_messages.append("Nenhuma atualização detectada usando Last-Modified. Arquivo no bucket GCS e tabela BigQuery permanecem inalterados.")
-                        save_log(log_messages)
-                        return
-            log_messages.append("Atualização detectada pelo Last-Modified. Baixando e atualizando arquivo JSON no bucket.")
-
-        else:
-            log_messages.append("Cabeçalho Last-Modified não encontrado. Tentando verificação por hash.")
-
-            # Fazendo requisição para obter dados completos e calcular o hash
-            response = requests.get(url)
-            response.raise_for_status()
-            breweries = response.json()
-            
-            # Calculando o hash dos dados JSON atuais
-            new_data_hash = hashlib.md5(json.dumps(breweries, sort_keys=True).encode('utf-8')).hexdigest()
-            log_messages.append(f"Hash dos dados atuais: {new_data_hash}")
-
-            # Verificação de atualização usando hash
-            if blob.exists() and blob.metadata:
-                gcs_last_hash = blob.metadata.get("data_hash")
-                log_messages.append(f"Comparando hash atual: {new_data_hash} com hash no bucket: {gcs_last_hash}")
-                if gcs_last_hash == new_data_hash:
-                    log_messages.append("Nenhuma atualização detectada usando hash. Arquivo no bucket GCS e tabela BigQuery permanecem inalterados.")
+        # Verifica se o arquivo no GCS já está atualizado
+        if blob.exists() and blob.metadata:
+            gcs_last_update = blob.metadata.get("last_update")
+            if gcs_last_update:
+                gcs_last_update_date = datetime.strptime(gcs_last_update, "%Y-%m-%dT%H:%M:%SZ")
+                if last_modified_date <= gcs_last_update_date:
+                    log_messages.append("Nenhuma atualização detectada usando Last-Modified. Dados inalterados.")
                     save_log(log_messages)
-                    return  # Interrompe o processo, pois os hashes são iguais
+                    return "skip"
+    return "proceed"
 
-            log_messages.append("Atualização detectada pelo hash. Baixando e atualizando arquivo JSON no bucket.")
+def fetch_data_and_hash():
+    # Baixa os dados completos e calcula o hash
+    response = requests.get(url)
+    response.raise_for_status()
+    breweries = response.json()
+    
+    # Calcula o hash dos dados JSON atuais
+    new_data_hash = hashlib.md5(json.dumps(breweries, sort_keys=True).encode('utf-8')).hexdigest()
+    log_messages.append(f"Hash dos dados atuais: {new_data_hash}")
+
+    return {
+        "breweries": breweries,
+        "new_data_hash": new_data_hash
+    }
+
+def compare_and_upload(ti):
+    # Recupera dados e hash da task anterior
+    breweries = ti.xcom_pull(task_ids='fetch_data_and_hash')['breweries']
+    new_data_hash = ti.xcom_pull(task_ids='fetch_data_and_hash')['new_data_hash']
+
+    # Conexão com o GCS
+    bucket = client.get_bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+
+    # Compara o hash atual com o hash armazenado no bucket
+    if blob.exists() and blob.metadata:
+        gcs_last_hash = blob.metadata.get("data_hash")
+        log_messages.append(f"Comparando hash atual: {new_data_hash} com hash no bucket: {gcs_last_hash}")
         
-        # Preparação dos dados para upload
-        json_lines = "\n".join([json.dumps(brewery) for brewery in breweries])
+        if gcs_last_hash == new_data_hash:
+            log_messages.append("Nenhuma atualização detectada usando hash. Dados inalterados.")
+            save_log(log_messages)
+            return "skip"
+    
+    # Prepara e faz o upload dos dados para o GCS
+    json_lines = "\n".join([json.dumps(brewery) for brewery in breweries])
+    blob.upload_from_string(json_lines, content_type='application/json')
+    blob.metadata = {
+        "last_update": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "data_hash": new_data_hash
+    }
+    blob.patch()
 
-        # Upload dos dados para o GCS e atualização de metadados
-        blob.upload_from_string(json_lines, content_type='application/json')
-        blob.metadata = {
-            "last_update": last_modified_date.strftime("%Y-%m-%dT%H:%M:%SZ") if last_modified else None,
-            "data_hash": new_data_hash
-        }
-        blob.patch()
-        
-        # Mensagem clara indicando a atualização no bucket e na tabela BigQuery
-        log_messages.append("Arquivo JSON atualizado com sucesso no bucket GCS.")
-        log_messages.append("Atualizando dados na tabela BigQuery: bronze table ID: case-abinbev.Medallion.bronze com os dados mais recentes.")
-
-    except requests.exceptions.RequestException as e:
-        log_messages.append(f"Erro ao acessar o endpoint: {e}")
-        logging.error(f"Erro ao acessar o endpoint: {e}")
-        raise
-
-    except Exception as e:
-        log_messages.append(f"Erro ao salvar no bucket GCS: {e}")
-        logging.error(f"Erro ao salvar no bucket GCS: {e}")
-        raise
-
+    log_messages.append("Arquivo JSON atualizado com sucesso no bucket GCS.")
+    log_messages.append("Dados atualizados na tabela BigQuery: bronze table ID: case-abinbev.Medallion.bronze")
     save_log(log_messages)
 
 # Função para salvar o log no bucket de logs
 def save_log(messages):
-    client = storage.Client()
     log_bucket = client.get_bucket('us-central1-composer-case-e66c77cc-bucket')
     log_blob = log_bucket.blob(f'logs/bronze_dag_log_{datetime.utcnow().strftime("%Y%m%d%H%M%S")}.log')
-    
-    # Concatene as mensagens e defina o encoding explicitamente
     log_content = "\n".join(messages).encode('utf-8')
     log_blob.upload_from_string(log_content, content_type="text/plain; charset=utf-8")
     logging.info("Log salvo com sucesso no bucket de logs.")
@@ -128,7 +121,7 @@ default_args = {
     'email_on_failure': True,
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
-    'on_failure_callback': alert_email_on_failure  # Callback para falha
+    'on_failure_callback': alert_email_on_failure
 }
 
 # Definindo a DAG Bronze
@@ -141,9 +134,20 @@ with DAG(
     catchup=False,
 ) as dag:
     
-    fetch_data = PythonOperator(
-        task_id='fetch_and_check_breweries',
-        python_callable=fetch_and_check_breweries,
+    check_last_modified_task = PythonOperator(
+        task_id='check_last_modified',
+        python_callable=check_last_modified
     )
 
-    fetch_data
+    fetch_data_and_hash_task = PythonOperator(
+        task_id='fetch_data_and_hash',
+        python_callable=fetch_data_and_hash
+    )
+
+    compare_and_upload_task = PythonOperator(
+        task_id='compare_and_upload',
+        python_callable=compare_and_upload
+    )
+
+    # Encadeamento das tasks com condição para prosseguir
+    check_last_modified_task >> fetch_data_and_hash_task >> compare_and_upload_task
