@@ -79,7 +79,7 @@ def fetch_and_check_breweries():
                 if gcs_last_hash == new_data_hash:
                     log_messages.append("Nenhuma atualização detectada usando hash. Arquivo no bucket GCS e tabela BigQuery permanecem inalterados.")
                     save_log(log_messages)
-                    return
+                    return  # Interrompe o processo, pois os hashes são iguais
 
             log_messages.append("Atualização detectada pelo hash. Baixando e atualizando arquivo JSON no bucket.")
         
