@@ -35,11 +35,12 @@ blob_name = 'data/bronze/breweries_raw.json'
 log_messages = []
 
 def log_message(message):
-    # Formatação de cada mensagem no log
-    log_messages.append(f"\n-----------------------------\n{message}\n-----------------------------\n")
+    log_messages.append(message)
 
 def check_last_modified():
     log_message("###############################\n   INÍCIO DA DAG\n###############################")
+    log_message(f"Verificando o endpoint {url} para dados de atualização.\n")
+    
     # Verifica o cabeçalho Last-Modified
     response = requests.head(url)
     response.raise_for_status()
@@ -47,7 +48,7 @@ def check_last_modified():
     
     if last_modified:
         last_modified_date = datetime.strptime(last_modified, "%a, %d %b %Y %H:%M:%S %Z")
-        log_message(f"Verificação usando Last-Modified: {last_modified}")
+        log_message(f"Tentativa de verificação usando Last-Modified: {last_modified}")
         
         # Conexão com o bucket e blob do GCS
         bucket = client.get_bucket(bucket_name)
@@ -62,10 +63,15 @@ def check_last_modified():
                     log_message("Nenhuma atualização detectada usando Last-Modified. Dados inalterados.")
                     save_log(log_messages)
                     return "skip"
+        log_message("Atualização detectada pelo Last-Modified. Baixando e atualizando arquivo JSON no bucket.")
+    else:
+        log_message("Cabeçalho Last-Modified não encontrado. Tentando verificação por hash.")
+    
     return "proceed"
 
 def fetch_data_and_hash():
     # Baixa os dados completos e calcula o hash
+    log_message("Obtendo dados completos do endpoint para calcular o hash.")
     response = requests.get(url)
     response.raise_for_status()
     breweries = response.json()
@@ -91,7 +97,7 @@ def compare_and_upload(ti):
     # Compara o hash atual com o hash armazenado nos metadados do blob
     if blob.exists() and blob.metadata:
         gcs_last_hash = blob.metadata.get("data_hash")
-        log_message(f"Comparando hash atual: {new_data_hash} com hash no bucket: {gcs_last_hash}")
+        log_message(f"Comparando hash atual ({new_data_hash}) com hash armazenado no GCS ({gcs_last_hash})")
         
         if gcs_last_hash == new_data_hash:
             log_message("Nenhuma atualização detectada usando hash. Dados inalterados.")
@@ -108,6 +114,7 @@ def compare_and_upload(ti):
     blob.patch()
 
     log_message("Arquivo JSON atualizado com sucesso no bucket GCS.")
+    log_message(f"Bucket destino: {bucket_name}, arquivo: {blob_name}")
     log_message("Dados atualizados na tabela BigQuery: bronze table ID: case-abinbev.Medallion.bronze")
     save_log(log_messages)
 
@@ -115,7 +122,7 @@ def compare_and_upload(ti):
 def save_log(messages):
     log_bucket = client.get_bucket('us-central1-composer-case-e66c77cc-bucket')
     log_blob = log_bucket.blob(f'logs/bronze_dag_log_{datetime.utcnow().strftime("%Y%m%d%H%M%S")}.log')
-    log_content = "\n".join(messages).encode('utf-8')
+    log_content = "\n\n".join(messages).encode('utf-8')
     log_blob.upload_from_string(log_content, content_type="text/plain; charset=utf-8")
     logging.info("Log salvo com sucesso no bucket de logs.")
 
