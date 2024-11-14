@@ -60,14 +60,6 @@ def fetch_and_check_breweries():
                         return
             log_messages.append("Atualização detectada pelo Last-Modified. Baixando e atualizando arquivo JSON no bucket.")
 
-            # Baixar os dados porque o Last-Modified indica atualização
-            response = requests.get(url)
-            response.raise_for_status()
-            breweries = response.json()
-            # Calculando o hash dos dados JSON atuais
-            new_data_hash = hashlib.md5(json.dumps(breweries, sort_keys=True).encode('utf-8')).hexdigest()
-            log_messages.append(f"Hash dos dados atuais: {new_data_hash}")
-
         else:
             log_messages.append("Cabeçalho Last-Modified não encontrado. Tentando verificação por hash.")
 
@@ -75,7 +67,7 @@ def fetch_and_check_breweries():
             response = requests.get(url)
             response.raise_for_status()
             breweries = response.json()
-
+            
             # Calculando o hash dos dados JSON atuais
             new_data_hash = hashlib.md5(json.dumps(breweries, sort_keys=True).encode('utf-8')).hexdigest()
             log_messages.append(f"Hash dos dados atuais: {new_data_hash}")
@@ -90,7 +82,7 @@ def fetch_and_check_breweries():
                     return
 
             log_messages.append("Atualização detectada pelo hash. Baixando e atualizando arquivo JSON no bucket.")
-
+        
         # Preparação dos dados para upload
         json_lines = "\n".join([json.dumps(brewery) for brewery in breweries])
 
@@ -101,7 +93,7 @@ def fetch_and_check_breweries():
             "data_hash": new_data_hash
         }
         blob.patch()
-
+        
         # Mensagem clara indicando a atualização no bucket e na tabela BigQuery
         log_messages.append("Arquivo JSON atualizado com sucesso no bucket GCS.")
         log_messages.append("Atualizando dados na tabela BigQuery: bronze table ID: case-abinbev.Medallion.bronze com os dados mais recentes.")
@@ -123,7 +115,7 @@ def save_log(messages):
     client = storage.Client()
     log_bucket = client.get_bucket('us-central1-composer-case-e66c77cc-bucket')
     log_blob = log_bucket.blob(f'logs/bronze_dag_log_{datetime.utcnow().strftime("%Y%m%d%H%M%S")}.log')
-
+    
     # Concatene as mensagens e defina o encoding explicitamente
     log_content = "\n".join(messages).encode('utf-8')
     log_blob.upload_from_string(log_content, content_type="text/plain; charset=utf-8")
@@ -137,3 +129,21 @@ default_args = {
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
     'on_failure_callback': alert_email_on_failure  # Callback para falha
+}
+
+# Definindo a DAG Bronze
+with DAG(
+    'bronze_dag',
+    default_args=default_args,
+    description='DAG para verificar atualização e consumir dados da API Open Brewery DB',
+    schedule_interval='@hourly',
+    start_date=datetime(2023, 1, 1),
+    catchup=False,
+) as dag:
+    
+    fetch_data = PythonOperator(
+        task_id='fetch_and_check_breweries',
+        python_callable=fetch_and_check_breweries,
+    )
+
+    fetch_data
