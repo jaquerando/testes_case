@@ -34,7 +34,12 @@ bucket_name = 'bucket-case-abinbev'
 blob_name = 'data/bronze/breweries_raw.json'
 log_messages = []
 
+def log_message(message):
+    # Formatação de cada mensagem no log
+    log_messages.append(f"\n-----------------------------\n{message}\n-----------------------------\n")
+
 def check_last_modified():
+    log_message("###############################\n   INÍCIO DA DAG\n###############################")
     # Verifica o cabeçalho Last-Modified
     response = requests.head(url)
     response.raise_for_status()
@@ -42,7 +47,7 @@ def check_last_modified():
     
     if last_modified:
         last_modified_date = datetime.strptime(last_modified, "%a, %d %b %Y %H:%M:%S %Z")
-        log_messages.append(f"Verificação usando Last-Modified: {last_modified}")
+        log_message(f"Verificação usando Last-Modified: {last_modified}")
         
         # Conexão com o bucket e blob do GCS
         bucket = client.get_bucket(bucket_name)
@@ -54,7 +59,7 @@ def check_last_modified():
             if gcs_last_update:
                 gcs_last_update_date = datetime.strptime(gcs_last_update, "%Y-%m-%dT%H:%M:%SZ")
                 if last_modified_date <= gcs_last_update_date:
-                    log_messages.append("Nenhuma atualização detectada usando Last-Modified. Dados inalterados.")
+                    log_message("Nenhuma atualização detectada usando Last-Modified. Dados inalterados.")
                     save_log(log_messages)
                     return "skip"
     return "proceed"
@@ -67,7 +72,7 @@ def fetch_data_and_hash():
     
     # Calcula o hash dos dados JSON atuais
     new_data_hash = hashlib.md5(json.dumps(breweries, sort_keys=True).encode('utf-8')).hexdigest()
-    log_messages.append(f"Hash dos dados atuais: {new_data_hash}")
+    log_message(f"Hash dos dados atuais: {new_data_hash}")
 
     return {
         "breweries": breweries,
@@ -83,13 +88,13 @@ def compare_and_upload(ti):
     bucket = client.get_bucket(bucket_name)
     blob = bucket.blob(blob_name)
 
-    # Compara o hash atual com o hash armazenado no bucket
+    # Compara o hash atual com o hash armazenado nos metadados do blob
     if blob.exists() and blob.metadata:
         gcs_last_hash = blob.metadata.get("data_hash")
-        log_messages.append(f"Comparando hash atual: {new_data_hash} com hash no bucket: {gcs_last_hash}")
+        log_message(f"Comparando hash atual: {new_data_hash} com hash no bucket: {gcs_last_hash}")
         
         if gcs_last_hash == new_data_hash:
-            log_messages.append("Nenhuma atualização detectada usando hash. Dados inalterados.")
+            log_message("Nenhuma atualização detectada usando hash. Dados inalterados.")
             save_log(log_messages)
             return "skip"
     
@@ -98,12 +103,12 @@ def compare_and_upload(ti):
     blob.upload_from_string(json_lines, content_type='application/json')
     blob.metadata = {
         "last_update": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "data_hash": new_data_hash
+        "data_hash": new_data_hash  # Armazena o hash como metadado
     }
     blob.patch()
 
-    log_messages.append("Arquivo JSON atualizado com sucesso no bucket GCS.")
-    log_messages.append("Dados atualizados na tabela BigQuery: bronze table ID: case-abinbev.Medallion.bronze")
+    log_message("Arquivo JSON atualizado com sucesso no bucket GCS.")
+    log_message("Dados atualizados na tabela BigQuery: bronze table ID: case-abinbev.Medallion.bronze")
     save_log(log_messages)
 
 # Função para salvar o log no bucket de logs
