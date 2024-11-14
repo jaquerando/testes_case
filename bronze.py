@@ -38,21 +38,22 @@ def fetch_and_check_breweries():
         response = requests.head(url)
         response.raise_for_status()
 
+        # Conexão com o GCS
+        client = storage.Client()
+        bucket = client.get_bucket('bucket-case-abinbev')
+        blob = bucket.blob('data/bronze/breweries_raw.json')
+
         # Tentativa de verificação pelo cabeçalho Last-Modified
         last_modified = response.headers.get("Last-Modified")
         if last_modified:
             last_modified_date = datetime.strptime(last_modified, "%a, %d %b %Y %H:%M:%S %Z")
             log_messages.append(f"Tentativa de verificação de atualização usando Last-Modified: {last_modified}")
-            
-            # Conexão com o GCS e verificação usando Last-Modified
-            client = storage.Client()
-            bucket = client.get_bucket('bucket-case-abinbev')
-            blob = bucket.blob('data/bronze/breweries_raw.json')
-            
+
+            # Verificação de metadados existentes no blob do GCS
             if blob.exists() and blob.metadata:
                 gcs_last_update = blob.metadata.get("last_update")
                 if gcs_last_update:
-                    gcs_last_update_date = datetime.strptime(gcs_last_update, "%Y-%m-%dT%H:%M:%S%Z")
+                    gcs_last_update_date = datetime.strptime(gcs_last_update, "%Y-%m-%dT%H:%M:%SZ")
                     if last_modified_date <= gcs_last_update_date:
                         log_messages.append("Nenhuma atualização detectada usando Last-Modified. Arquivo no bucket GCS e tabela BigQuery permanecem inalterados.")
                         save_log(log_messages)
@@ -71,12 +72,9 @@ def fetch_and_check_breweries():
             new_data_hash = hashlib.md5(json.dumps(breweries, sort_keys=True).encode('utf-8')).hexdigest()
 
             # Verificação de atualização usando hash
-            client = storage.Client()
-            bucket = client.get_bucket('bucket-case-abinbev')
-            blob = bucket.blob('data/bronze/breweries_raw.json')
-
             if blob.exists() and blob.metadata:
                 gcs_last_hash = blob.metadata.get("data_hash")
+                log_messages.append(f"Comparando hash atual: {new_data_hash} com hash no bucket: {gcs_last_hash}")
                 if gcs_last_hash == new_data_hash:
                     log_messages.append("Nenhuma atualização detectada usando hash. Arquivo no bucket GCS e tabela BigQuery permanecem inalterados.")
                     save_log(log_messages)
@@ -90,7 +88,7 @@ def fetch_and_check_breweries():
         # Upload dos dados para o GCS e atualização de metadados
         blob.upload_from_string(json_lines, content_type='application/json')
         blob.metadata = {
-            "last_update": last_modified_date.strftime("%Y-%m-%dT%H:%M:%S%Z") if last_modified else None,
+            "last_update": last_modified_date.strftime("%Y-%m-%dT%H:%M:%SZ") if last_modified else None,
             "data_hash": new_data_hash
         }
         blob.patch()
