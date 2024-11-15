@@ -4,11 +4,11 @@ from airflow.operators.python_operator import PythonOperator
 from airflow.utils.email import send_email
 from datetime import datetime, timedelta
 from google.cloud import storage
-# import great_expectations as ge  # Comente a linha se o pacote não estiver disponível
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, trim, lower, initcap, coalesce
+import os
 
-# Função de callback para enviar e-mail em caso de falha
+# Configuração de autenticação e e-mail para falhas
 def alert_email_on_failure(context):
     dag_id = context.get('dag').dag_id
     task_id = context.get('task_instance').task_id
@@ -27,17 +27,33 @@ def alert_email_on_failure(context):
     """
     send_email(to=email, subject=subject, html_content=body)
 
-# Função para transformar dados e salvar na camada Silver
+# Função de autenticação e download da chave
+def download_auth_key():
+    storage_client = storage.Client()
+    bucket = storage_client.get_bucket('us-central1-composer-case-e66c77cc-bucket')
+    blob = bucket.blob('config/case-abinbev-6d2559f17b6f.json')
+    auth_key_path = '/tmp/case-abinbev-6d2559f17b6f.json'
+    blob.download_to_filename(auth_key_path)
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = auth_key_path
+    logging.info(f"Arquivo de chave de autenticação baixado e configurado em: {auth_key_path}")
+
+# Função para transformação de dados
 def transform_data_to_silver():
     log_messages = ["Iniciando transformação dos dados da camada Bronze para Silver"]
     
     try:
-        spark = SparkSession.builder.appName("BrewerySilverLayer").getOrCreate()
-        log_messages.append("Sessão Spark inicializada")
+        # Inicializa o Spark com o caminho do conector GCS
+        spark = SparkSession.builder \
+            .appName("BrewerySilverLayer") \
+            .config("spark.jars", "/tmp/gcs-connector-hadoop3-latest.jar") \
+            .getOrCreate()
         
+        log_messages.append("Sessão Spark inicializada com conector GCS configurado")
+
         bronze_path = "gs://bucket-case-abinbev/data/bronze/breweries_raw.json"
         silver_path = "gs://bucket-case-abinbev/data/silver/breweries_transformed"
         
+        # Lendo os dados da camada Bronze
         raw_df = spark.read.json(bronze_path)
         log_messages.append("Dados carregados da camada Bronze")
 
@@ -48,23 +64,18 @@ def transform_data_to_silver():
             .withColumn("name", initcap(trim(col("name"))))
             .withColumn("brewery_type", coalesce(col("brewery_type"), col("unknown")))
             .withColumn("address_1", initcap(trim(col("address_1"))))
-            .withColumn("address_2", initcap(trim(col("address_2"))))
-            .withColumn("address_3", initcap(trim(col("address_3"))))
             .withColumn("city", initcap(trim(col("city"))))
             .withColumn("state_province", lower(trim(col("state_province"))))
             .withColumn("postal_code", trim(col("postal_code")))
             .withColumn("country", initcap(trim(col("country"))))
             .withColumn("longitude", col("longitude").cast("double"))
             .withColumn("latitude", col("latitude").cast("double"))
-            .withColumn("phone", trim(col("phone")))
-            .withColumn("website_url", trim(col("website_url")))
-            .withColumn("state", lower(trim(col("state"))))
-            .withColumn("street", initcap(trim(col("street"))))
             .na.drop(subset=["id", "name", "city", "state", "country"])
         )
         
+        # Salvando na camada Silver
         transformed_df.write.mode("overwrite").partitionBy("country").parquet(silver_path)
-        log_messages.append("Dados salvos na camada Silver")
+        log_messages.append("Dados transformados e salvos na camada Silver")
 
     except Exception as e:
         log_messages.append(f"Erro na transformação: {e}")
@@ -73,7 +84,7 @@ def transform_data_to_silver():
 
     save_log(log_messages)
 
-# Função para salvar logs no bucket de logs
+# Função para salvar logs
 def save_log(messages):
     client = storage.Client()
     log_bucket = client.get_bucket('us-central1-composer-case-e66c77cc-bucket')
@@ -100,15 +111,16 @@ with DAG(
     catchup=False,
 ) as dag:
     
+    # Task de autenticação
+    download_auth_key_task = PythonOperator(
+        task_id='download_auth_key',
+        python_callable=download_auth_key,
+    )
+
+    # Task de transformação de dados
     transform_data = PythonOperator(
         task_id='transform_data_to_silver',
         python_callable=transform_data_to_silver,
     )
-    
-    # Descomente a linha abaixo quando `great_expectations` estiver instalado
-    # validate_data = PythonOperator(
-    #     task_id='validate_data_with_great_expectations',
-    #     python_callable=validate_data_with_great_expectations,
-    # )
 
-    transform_data  # >> validate_data # Comente essa linha para evitar o erro caso `great_expectations` não esteja instalado
+    download_auth_key_task >> transform_data
