@@ -1,12 +1,11 @@
 import logging
-import os
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
 from airflow.utils.email import send_email
 from datetime import datetime, timedelta
+from google.cloud import bigquery
 from google.cloud import storage
 import pandas as pd
-import json
 
 # Configuração de autenticação e e-mail para falhas
 def alert_email_on_failure(context):
@@ -27,59 +26,57 @@ def alert_email_on_failure(context):
     """
     send_email(to=email, subject=subject, html_content=body)
 
-# Função de autenticação e download da chave
-def download_auth_key():
-    storage_client = storage.Client()
-    bucket = storage_client.get_bucket('us-central1-composer-case-e66c77cc-bucket')
-    blob = bucket.blob('config/case-abinbev-6d2559f17b6f.json')
-    auth_key_path = '/tmp/case-abinbev-6d2559f17b6f.json'
-    blob.download_to_filename(auth_key_path)
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = auth_key_path
-    logging.info(f"Arquivo de chave de autenticação baixado e configurado em: {auth_key_path}")
-
-# Função para transformação de dados e salvar no formato Parquet
-def transform_data_to_silver():
-    log_messages = []
-    log_messages.append("Iniciando transformação dos dados da camada Bronze para Silver")
-
+# Função para carregar os dados transformados no BigQuery
+def load_data_to_bigquery():
+    log_messages = ["Iniciando transformação e carregamento dos dados para BigQuery"]
+    
     try:
-        bronze_path = "gs://bucket-case-abinbev/data/bronze/breweries_raw.json"
-        silver_path = "gs://bucket-case-abinbev/data/silver/breweries_transformed/breweries_transformed.parquet"
-
-        # Conectar ao GCS e baixar os dados Bronze
+        # Configuração do caminho no GCS
+        bucket_name = "bucket-case-abinbev"
+        bronze_path = f"gs://{bucket_name}/data/bronze/breweries_raw.json"
         client = storage.Client()
-        bucket = client.get_bucket("bucket-case-abinbev")
+        bucket = client.get_bucket(bucket_name)
+        
+        # Lendo os dados do JSON
         blob = bucket.blob("data/bronze/breweries_raw.json")
-        raw_data = json.loads(blob.download_as_text())
-        log_messages.append("Dados carregados da camada Bronze")
+        raw_data = blob.download_as_text()
+        raw_df = pd.read_json(raw_data)
 
-        # Processar os dados com Pandas
-        df = pd.json_normalize(raw_data)
-        log_messages.append("Dados processados usando Pandas")
+        # Transformações nos dados
+        raw_df["id"] = raw_df["id"].str.strip()
+        raw_df["name"] = raw_df["name"].str.title()
+        raw_df["brewery_type"] = raw_df["brewery_type"].fillna("unknown")
+        raw_df["address_1"] = raw_df["address_1"].str.title()
+        raw_df["city"] = raw_df["city"].str.title()
+        raw_df["state"] = raw_df["state"].str.lower()
+        raw_df["state_partition"] = raw_df["state"].apply(lambda x: hash(x) % 50)  # Calcula o particionamento
+        raw_df["country"] = raw_df["country"].str.title()
+        raw_df["longitude"] = pd.to_numeric(raw_df["longitude"], errors="coerce")
+        raw_df["latitude"] = pd.to_numeric(raw_df["latitude"], errors="coerce")
+        raw_df["phone"] = raw_df["phone"].str.strip()
+        raw_df["website_url"] = raw_df["website_url"].str.strip()
 
-        # Transformações
-        df["id"] = df["id"].str.strip()
-        df["name"] = df["name"].str.title().str.strip()
-        df["brewery_type"] = df["brewery_type"].fillna("unknown")
-        df["city"] = df["city"].str.title().str.strip()
-        df["state_province"] = df["state_province"].str.lower().str.strip()
-        df["postal_code"] = df["postal_code"].str.strip()
-        df["country"] = df["country"].str.title().str.strip()
-        df = df.dropna(subset=["id", "name", "city", "state_province", "country"])
+        log_messages.append("Dados transformados com sucesso.")
 
-        # Salvar o resultado no GCS no formato Parquet
-        local_parquet_path = "/tmp/breweries_transformed.parquet"
-        df.to_parquet(local_parquet_path, engine='pyarrow', index=False)
-        log_messages.append("Dados transformados para Parquet")
+        # Configuração do BigQuery
+        project_id = "case-abinbev"
+        dataset_id = "Medallion"
+        table_id = "silver"
+        
+        client = bigquery.Client()
+        table_ref = client.dataset(dataset_id).table(table_id)
 
-        # Upload do arquivo Parquet para o GCS
-        silver_blob = bucket.blob("data/silver/breweries_transformed/breweries_transformed.parquet")
-        with open(local_parquet_path, "rb") as f:
-            silver_blob.upload_from_file(f, content_type="application/octet-stream")
-        log_messages.append(f"Dados transformados e salvos na camada Silver: {silver_path}")
+        # Carregando os dados no BigQuery
+        job_config = bigquery.LoadJobConfig(
+            write_disposition=bigquery.WriteDisposition.WRITE_APPEND
+        )
+        job = client.load_table_from_dataframe(raw_df, table_ref, job_config=job_config)
+        job.result()  # Aguarda o término do job
+
+        log_messages.append(f"Dados carregados com sucesso na tabela {dataset_id}.{table_id} no BigQuery.")
 
     except Exception as e:
-        log_messages.append(f"Erro na transformação: {e}")
+        log_messages.append(f"Erro ao carregar os dados: {e}")
         logging.error(f"Erro: {e}")
         raise
 
@@ -88,9 +85,9 @@ def transform_data_to_silver():
 # Função para salvar logs
 def save_log(messages):
     client = storage.Client()
-    log_bucket = client.get_bucket('us-central1-composer-case-e66c77cc-bucket')
+    log_bucket = client.get_bucket("us-central1-composer-case-e66c77cc-bucket")
     log_blob = log_bucket.blob(f'logs/silver_dag_log_{datetime.utcnow().strftime("%Y%m%d%H%M%S")}.log')
-    log_blob.upload_from_string("\n".join(messages), content_type="text/plain; charset=utf-8")
+    log_blob.upload_from_string("\n".join(messages), content_type="text/plain")
     logging.info("Log salvo no bucket de logs.")
 
 # Configuração da DAG Silver
@@ -106,22 +103,14 @@ default_args = {
 with DAG(
     'silver_dag',
     default_args=default_args,
-    description='DAG para transformar dados da camada Bronze e salvar na camada Silver',
+    description='DAG para transformar dados da camada Bronze e carregar na camada Silver no BigQuery',
     schedule_interval=timedelta(days=1),
     start_date=datetime(2023, 1, 1),
     catchup=False,
 ) as dag:
     
-    # Task de autenticação
-    download_auth_key_task = PythonOperator(
-        task_id='download_auth_key',
-        python_callable=download_auth_key,
+    # Task de transformação e carregamento
+    load_data_task = PythonOperator(
+        task_id='load_data_to_bigquery',
+        python_callable=load_data_to_bigquery,
     )
-
-    # Task de transformação de dados
-    transform_data = PythonOperator(
-        task_id='transform_data_to_silver',
-        python_callable=transform_data_to_silver,
-    )
-
-    download_auth_key_task >> transform_data
