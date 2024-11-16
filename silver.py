@@ -1,5 +1,5 @@
 import logging
-import os  # Adicionando a importação do módulo os
+import os
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
 from airflow.utils.email import send_email
@@ -37,13 +37,14 @@ def download_auth_key():
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = auth_key_path
     logging.info(f"Arquivo de chave de autenticação baixado e configurado em: {auth_key_path}")
 
-# Função para transformar dados usando Pandas
+# Função para transformação de dados e salvar no formato Parquet
 def transform_data_to_silver():
-    log_messages = ["Iniciando transformação dos dados da camada Bronze para Silver"]
+    log_messages = []
+    log_messages.append("Iniciando transformação dos dados da camada Bronze para Silver")
 
     try:
         bronze_path = "gs://bucket-case-abinbev/data/bronze/breweries_raw.json"
-        silver_path = "gs://bucket-case-abinbev/data/silver/breweries_transformed/"
+        silver_path = "gs://bucket-case-abinbev/data/silver/breweries_transformed/breweries_transformed.parquet"
 
         # Conectar ao GCS e baixar os dados Bronze
         client = storage.Client()
@@ -66,11 +67,16 @@ def transform_data_to_silver():
         df["country"] = df["country"].str.title().str.strip()
         df = df.dropna(subset=["id", "name", "city", "state_province", "country"])
 
-        # Salvar o resultado no GCS
-        transformed_data = df.to_json(orient="records", lines=True)
-        silver_blob = bucket.blob("data/silver/breweries_transformed/breweries_transformed.json")
-        silver_blob.upload_from_string(transformed_data, content_type="application/json")
-        log_messages.append("Dados transformados e salvos na camada Silver")
+        # Salvar o resultado no GCS no formato Parquet
+        local_parquet_path = "/tmp/breweries_transformed.parquet"
+        df.to_parquet(local_parquet_path, engine='pyarrow', index=False)
+        log_messages.append("Dados transformados para Parquet")
+
+        # Upload do arquivo Parquet para o GCS
+        silver_blob = bucket.blob("data/silver/breweries_transformed/breweries_transformed.parquet")
+        with open(local_parquet_path, "rb") as f:
+            silver_blob.upload_from_file(f, content_type="application/octet-stream")
+        log_messages.append(f"Dados transformados e salvos na camada Silver: {silver_path}")
 
     except Exception as e:
         log_messages.append(f"Erro na transformação: {e}")
@@ -84,7 +90,7 @@ def save_log(messages):
     client = storage.Client()
     log_bucket = client.get_bucket('us-central1-composer-case-e66c77cc-bucket')
     log_blob = log_bucket.blob(f'logs/silver_dag_log_{datetime.utcnow().strftime("%Y%m%d%H%M%S")}.log')
-    log_blob.upload_from_string("\n".join(messages), content_type="text/plain")
+    log_blob.upload_from_string("\n".join(messages), content_type="text/plain; charset=utf-8")
     logging.info("Log salvo no bucket de logs.")
 
 # Configuração da DAG Silver
