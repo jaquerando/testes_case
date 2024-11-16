@@ -35,24 +35,17 @@ log_bucket_name = 'us-central1-composer-case-e66c77cc-bucket'
 log_messages = []
 
 def log_message(message):
-    # Função para formatar cada mensagem no log
     log_messages.append(f"\n{message}\n{'-'*40}")
 
 def get_last_hash_from_log():
-    """Obtém o último hash registrado no bucket de logs."""
     client = storage.Client()
     log_bucket = client.get_bucket(log_bucket_name)
-    
-    # Lista os blobs do bucket de logs, ordenados por nome para obter o mais recente
     blobs = list(log_bucket.list_blobs(prefix='logs/'))
     blobs.sort(key=lambda x: x.name, reverse=True)
-    
+
     if blobs:
-        # Obtém o último arquivo de log e lê o conteúdo
         latest_log_blob = blobs[0]
         log_content = latest_log_blob.download_as_text()
-        
-        # Procura pela linha que contém o hash
         for line in log_content.splitlines():
             if "Hash dos dados atuais baixados:" in line:
                 last_hash = line.split(":")[-1].strip()
@@ -61,47 +54,43 @@ def get_last_hash_from_log():
     log_message("Nenhum hash encontrado no log anterior.")
     return None
 
-def fetch_data_and_compare():
-    """Realiza o download dos dados e compara usando o último hash obtido do log."""
+def fetch_data_and_compare(**kwargs):
     log_message("Download dos dados para verificação usando hash.")
     response = requests.get(url)
     response.raise_for_status()
     breweries = response.json()
-    
-    # Ordena os dados e converte em string antes de calcular o hash
+
     breweries_sorted_str = json.dumps(breweries, sort_keys=True)
     new_data_hash = hashlib.md5(breweries_sorted_str.encode('utf-8')).hexdigest()
     log_message(f"Hash dos dados atuais baixados: {new_data_hash}")
 
-    # Obtém o último hash registrado nos logs para comparação
     last_hash = get_last_hash_from_log()
 
     if last_hash == new_data_hash:
-        log_message("Nenhuma atualização detectada ao comparar com o último hash. Dados inalterados.")
+        log_message("Nenhuma atualização detectada. Dados inalterados.")
         save_log()
-        return False  # Nenhuma atualização
+        kwargs['ti'].xcom_push(key='file_updated', value=False)
+        log_message("Enviando XCom: Sinal para que a DAG Silver NÃO seja executada.")
+        return False
 
-    # Procede com upload se houver diferença no hash
     upload_to_gcs(breweries_sorted_str, new_data_hash)
-    return True  # Dados atualizados
+    kwargs['ti'].xcom_push(key='file_updated', value=True)
+    log_message("Enviando XCom: Sinal para que a DAG Silver seja executada.")
+    return True
 
 def upload_to_gcs(breweries_data, new_data_hash):
-    """Faz o upload dos dados atualizados para o GCS."""
     log_message("Atualização detectada. Realizando upload dos dados para o GCS.")
     client = storage.Client()
     bucket = client.get_bucket(bucket_name)
     blob = bucket.blob(blob_name)
-
-    # Faz o upload do JSON ordenado
     blob.upload_from_string(breweries_data, content_type='application/json')
     log_message(f"Bucket de destino: {bucket_name}, Caminho do arquivo: {blob_name}")
     save_log(new_data_hash)
 
 def save_log(new_data_hash=None):
-    """Salva as mensagens do log no bucket de logs, incluindo o novo hash."""
     if new_data_hash:
         log_message(f"Novo hash dos dados armazenados: {new_data_hash}")
-        
+
     client = storage.Client()
     log_bucket = client.get_bucket(log_bucket_name)
     log_blob = log_bucket.blob(f'logs/bronze_dag_log_{datetime.utcnow().strftime("%Y%m%d%H%M%S")}.log')
@@ -131,5 +120,6 @@ with DAG(
     
     fetch_data_task = PythonOperator(
         task_id='fetch_data_and_compare',
-        python_callable=fetch_data_and_compare
+        python_callable=fetch_data_and_compare,
+        provide_context=True
     )
