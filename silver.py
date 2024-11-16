@@ -1,4 +1,5 @@
 import logging
+import os  # Adicionando a importação do módulo os
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
 from airflow.utils.email import send_email
