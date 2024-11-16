@@ -43,18 +43,18 @@ def load_data_to_bigquery():
         raw_df = pd.read_json(raw_data)
 
         # Transformações nos dados
-        raw_df["id"] = raw_df["id"].str.strip()
-        raw_df["name"] = raw_df["name"].str.title()
-        raw_df["brewery_type"] = raw_df["brewery_type"].fillna("unknown")
-        raw_df["address_1"] = raw_df["address_1"].str.title()
-        raw_df["city"] = raw_df["city"].str.title()
-        raw_df["state"] = raw_df["state"].str.lower()
+        raw_df["id"] = raw_df["id"].astype(str).str.strip()
+        raw_df["name"] = raw_df["name"].astype(str).str.title()
+        raw_df["brewery_type"] = raw_df["brewery_type"].fillna("unknown").astype(str)
+        raw_df["address_1"] = raw_df["address_1"].fillna("").astype(str).str.title()
+        raw_df["city"] = raw_df["city"].astype(str).str.title()
+        raw_df["state"] = raw_df["state"].fillna("").astype(str).str.lower()
         raw_df["state_partition"] = raw_df["state"].apply(lambda x: hash(x) % 50)  # Calcula o particionamento
-        raw_df["country"] = raw_df["country"].str.title()
+        raw_df["country"] = raw_df["country"].astype(str).str.title()
         raw_df["longitude"] = pd.to_numeric(raw_df["longitude"], errors="coerce")
         raw_df["latitude"] = pd.to_numeric(raw_df["latitude"], errors="coerce")
-        raw_df["phone"] = raw_df["phone"].str.strip()
-        raw_df["website_url"] = raw_df["website_url"].str.strip()
+        raw_df["phone"] = raw_df["phone"].fillna("").astype(str).str.strip()
+        raw_df["website_url"] = raw_df["website_url"].fillna("").astype(str).str.strip()
 
         log_messages.append("Dados transformados com sucesso.")
 
