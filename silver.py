@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from google.cloud import bigquery
 from google.cloud import storage
 import pandas as pd
+import os
 
 # Configuração de autenticação e e-mail para falhas
 def alert_email_on_failure(context):
@@ -26,23 +27,37 @@ def alert_email_on_failure(context):
     """
     send_email(to=email, subject=subject, html_content=body)
 
-# Função para carregar os dados transformados no BigQuery
-def load_data_to_bigquery():
-    log_messages = ["Iniciando transformação e carregamento dos dados para BigQuery"]
-    
+# Função para baixar os dados do GCS
+def download_data(**kwargs):
+    log_messages = ["Iniciando o download dos dados da camada Bronze"]
     try:
         # Configuração do caminho no GCS
         bucket_name = "bucket-case-abinbev"
-        bronze_path = f"gs://{bucket_name}/data/bronze/breweries_raw.json"
-        client = storage.Client()
-        bucket = client.get_bucket(bucket_name)
+        storage_client = storage.Client()
+        bucket = storage_client.get_bucket(bucket_name)
         
-        # Lendo os dados do JSON
+        # Baixando o arquivo
         blob = bucket.blob("data/bronze/breweries_raw.json")
         raw_data = blob.download_as_text()
-        raw_df = pd.read_json(raw_data)
+        
+        # Passando os dados para a próxima task
+        kwargs['ti'].xcom_push(key="raw_data", value=raw_data)
+        log_messages.append("Download concluído com sucesso.")
+    except Exception as e:
+        log_messages.append(f"Erro ao baixar os dados: {e}")
+        logging.error(f"Erro: {e}")
+        raise
+    save_log(log_messages)
 
-        # Transformações nos dados
+# Função para transformar os dados
+def transform_data(**kwargs):
+    log_messages = ["Iniciando a transformação dos dados"]
+    try:
+        # Recuperando os dados da task anterior
+        raw_data = kwargs['ti'].xcom_pull(key="raw_data", task_ids="download_data")
+        raw_df = pd.read_json(raw_data)
+        
+        # Realizando transformações
         raw_df["id"] = raw_df["id"].astype(str).str.strip()
         raw_df["name"] = raw_df["name"].astype(str).str.title()
         raw_df["brewery_type"] = raw_df["brewery_type"].fillna("unknown").astype(str)
@@ -56,7 +71,23 @@ def load_data_to_bigquery():
         raw_df["phone"] = raw_df["phone"].fillna("").astype(str).str.strip()
         raw_df["website_url"] = raw_df["website_url"].fillna("").astype(str).str.strip()
 
-        log_messages.append("Dados transformados com sucesso.")
+        log_messages.append("Transformação concluída com sucesso.")
+        
+        # Passando o DataFrame transformado para a próxima task
+        kwargs['ti'].xcom_push(key="transformed_data", value=raw_df.to_json())
+    except Exception as e:
+        log_messages.append(f"Erro na transformação dos dados: {e}")
+        logging.error(f"Erro: {e}")
+        raise
+    save_log(log_messages)
+
+# Função para carregar os dados no BigQuery
+def load_data_to_bigquery(**kwargs):
+    log_messages = ["Iniciando o carregamento dos dados para o BigQuery"]
+    try:
+        # Recuperando os dados da task anterior
+        transformed_data = kwargs['ti'].xcom_pull(key="transformed_data", task_ids="transform_data")
+        transformed_df = pd.read_json(transformed_data)
 
         # Configuração do BigQuery
         project_id = "case-abinbev"
@@ -70,16 +101,14 @@ def load_data_to_bigquery():
         job_config = bigquery.LoadJobConfig(
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND
         )
-        job = client.load_table_from_dataframe(raw_df, table_ref, job_config=job_config)
+        job = client.load_table_from_dataframe(transformed_df, table_ref, job_config=job_config)
         job.result()  # Aguarda o término do job
 
         log_messages.append(f"Dados carregados com sucesso na tabela {dataset_id}.{table_id} no BigQuery.")
-
     except Exception as e:
-        log_messages.append(f"Erro ao carregar os dados: {e}")
+        log_messages.append(f"Erro ao carregar os dados no BigQuery: {e}")
         logging.error(f"Erro: {e}")
         raise
-
     save_log(log_messages)
 
 # Função para salvar logs
@@ -109,8 +138,25 @@ with DAG(
     catchup=False,
 ) as dag:
     
-    # Task de transformação e carregamento
+    # Task de download
+    download_data_task = PythonOperator(
+        task_id='download_data',
+        python_callable=download_data,
+        provide_context=True,
+    )
+    
+    # Task de transformação
+    transform_data_task = PythonOperator(
+        task_id='transform_data',
+        python_callable=transform_data,
+        provide_context=True,
+    )
+    
+    # Task de carregamento
     load_data_task = PythonOperator(
         task_id='load_data_to_bigquery',
         python_callable=load_data_to_bigquery,
+        provide_context=True,
     )
+
+    download_data_task >> transform_data_task >> load_data_task
