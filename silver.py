@@ -1,12 +1,12 @@
 import logging
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
+from airflow.sensors.python import PythonSensor
 from airflow.utils.email import send_email
 from datetime import datetime, timedelta
 from google.cloud import bigquery
 from google.cloud import storage
 import pandas as pd
-import os
 
 # Configuração de autenticação e e-mail para falhas
 def alert_email_on_failure(context):
@@ -27,20 +27,29 @@ def alert_email_on_failure(context):
     """
     send_email(to=email, subject=subject, html_content=body)
 
+# Sensor para verificar se o arquivo foi atualizado na Bronze
+def check_file_updated(**kwargs):
+    updated = kwargs['ti'].xcom_pull(
+        dag_id='bronze_dag',  # Nome da DAG Bronze
+        task_ids='fetch_data_and_compare',  # Task que define o XCom
+        key='file_updated'
+    )
+    if updated:
+        logging.info("Recebido sinal no XCom para executar a DAG Silver: Executando.")
+        return True
+    else:
+        logging.info("Recebido sinal no XCom para NÃO executar a DAG Silver: Abortando.")
+        return False
+
 # Função para baixar os dados do GCS
 def download_data(**kwargs):
     log_messages = ["Iniciando o download dos dados da camada Bronze"]
     try:
-        # Configuração do caminho no GCS
         bucket_name = "bucket-case-abinbev"
         storage_client = storage.Client()
         bucket = storage_client.get_bucket(bucket_name)
-        
-        # Baixando o arquivo
         blob = bucket.blob("data/bronze/breweries_raw.json")
         raw_data = blob.download_as_text()
-        
-        # Passando os dados para a próxima task
         kwargs['ti'].xcom_push(key="raw_data", value=raw_data)
         log_messages.append("Download concluído com sucesso.")
     except Exception as e:
@@ -53,28 +62,14 @@ def download_data(**kwargs):
 def transform_data(**kwargs):
     log_messages = ["Iniciando a transformação dos dados"]
     try:
-        # Recuperando os dados da task anterior
         raw_data = kwargs['ti'].xcom_pull(key="raw_data", task_ids="download_data")
         raw_df = pd.read_json(raw_data)
-        
-        # Realizando transformações
         raw_df["id"] = raw_df["id"].astype(str).str.strip()
         raw_df["name"] = raw_df["name"].astype(str).str.title()
         raw_df["brewery_type"] = raw_df["brewery_type"].fillna("unknown").astype(str)
-        raw_df["address_1"] = raw_df["address_1"].fillna("").astype(str).str.title()
-        raw_df["city"] = raw_df["city"].astype(str).str.title()
-        raw_df["state"] = raw_df["state"].fillna("").astype(str).str.lower()
-        raw_df["state_partition"] = raw_df["state"].apply(lambda x: hash(x) % 50)  # Calcula o particionamento
-        raw_df["country"] = raw_df["country"].astype(str).str.title()
-        raw_df["longitude"] = pd.to_numeric(raw_df["longitude"], errors="coerce")
-        raw_df["latitude"] = pd.to_numeric(raw_df["latitude"], errors="coerce")
-        raw_df["phone"] = raw_df["phone"].fillna("").astype(str).str.strip()
-        raw_df["website_url"] = raw_df["website_url"].fillna("").astype(str).str.strip()
-
-        log_messages.append("Transformação concluída com sucesso.")
-        
-        # Passando o DataFrame transformado para a próxima task
+        raw_df["state_partition"] = raw_df["state"].apply(lambda x: hash(x) % 50)
         kwargs['ti'].xcom_push(key="transformed_data", value=raw_df.to_json())
+        log_messages.append("Transformação concluída com sucesso.")
     except Exception as e:
         log_messages.append(f"Erro na transformação dos dados: {e}")
         logging.error(f"Erro: {e}")
@@ -85,25 +80,16 @@ def transform_data(**kwargs):
 def load_data_to_bigquery(**kwargs):
     log_messages = ["Iniciando o carregamento dos dados para o BigQuery"]
     try:
-        # Recuperando os dados da task anterior
         transformed_data = kwargs['ti'].xcom_pull(key="transformed_data", task_ids="transform_data")
         transformed_df = pd.read_json(transformed_data)
-
-        # Configuração do BigQuery
         project_id = "case-abinbev"
         dataset_id = "Medallion"
         table_id = "silver"
-        
         client = bigquery.Client()
         table_ref = client.dataset(dataset_id).table(table_id)
-
-        # Carregando os dados no BigQuery
-        job_config = bigquery.LoadJobConfig(
-            write_disposition=bigquery.WriteDisposition.WRITE_APPEND
-        )
+        job_config = bigquery.LoadJobConfig(write_disposition=bigquery.WriteDisposition.WRITE_APPEND)
         job = client.load_table_from_dataframe(transformed_df, table_ref, job_config=job_config)
-        job.result()  # Aguarda o término do job
-
+        job.result()
         log_messages.append(f"Dados carregados com sucesso na tabela {dataset_id}.{table_id} no BigQuery.")
     except Exception as e:
         log_messages.append(f"Erro ao carregar os dados no BigQuery: {e}")
@@ -138,25 +124,32 @@ with DAG(
     catchup=False,
 ) as dag:
     
+    # Sensor para verificar se a DAG Bronze detectou atualização
+    wait_for_file_update = PythonSensor(
+        task_id='wait_for_file_update',
+        python_callable=check_file_updated,
+        poke_interval=30,
+        timeout=3600,
+        mode='poke',
+    )
+    
     # Task de download
     download_data_task = PythonOperator(
         task_id='download_data',
         python_callable=download_data,
-        provide_context=True,
     )
     
     # Task de transformação
     transform_data_task = PythonOperator(
         task_id='transform_data',
         python_callable=transform_data,
-        provide_context=True,
     )
     
     # Task de carregamento
     load_data_task = PythonOperator(
         task_id='load_data_to_bigquery',
         python_callable=load_data_to_bigquery,
-        provide_context=True,
     )
 
-    download_data_task >> transform_data_task >> load_data_task
+    # Definindo a sequência de execução
+    wait_for_file_update >> download_data_task >> transform_data_task >> load_data_task
