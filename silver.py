@@ -34,6 +34,12 @@ def check_file_updated(**kwargs):
         task_ids='fetch_data_and_compare',  # Task que define o XCom
         key='file_updated'
     )
+    
+    # Verifica se o valor retornado é válido
+    if updated is None:
+        logging.warning("Nenhum valor encontrado no XCom. Abortando execução.")
+        return False
+    
     if updated:
         logging.info("Recebido sinal no XCom para executar a DAG Silver: Executando.")
         return True
@@ -48,7 +54,7 @@ def download_data(**kwargs):
         bucket_name = "bucket-case-abinbev"
         storage_client = storage.Client()
         bucket = storage_client.get_bucket(bucket_name)
-        blob = bucket.blob("data/bronze/breweries_raw.json")
+        blob = bucket.blob("data/bronze/breweries_raw.ndjson")
         raw_data = blob.download_as_text()
         kwargs['ti'].xcom_push(key="raw_data", value=raw_data)
         log_messages.append("Download concluído com sucesso.")
@@ -63,12 +69,12 @@ def transform_data(**kwargs):
     log_messages = ["Iniciando a transformação dos dados"]
     try:
         raw_data = kwargs['ti'].xcom_pull(key="raw_data", task_ids="download_data")
-        raw_df = pd.read_json(raw_data)
+        raw_df = pd.read_json(raw_data, lines=True)
         raw_df["id"] = raw_df["id"].astype(str).str.strip()
         raw_df["name"] = raw_df["name"].astype(str).str.title()
         raw_df["brewery_type"] = raw_df["brewery_type"].fillna("unknown").astype(str)
         raw_df["state_partition"] = raw_df["state"].apply(lambda x: hash(x) % 50)
-        kwargs['ti'].xcom_push(key="transformed_data", value=raw_df.to_json())
+        kwargs['ti'].xcom_push(key="transformed_data", value=raw_df.to_json(orient='records', lines=True))
         log_messages.append("Transformação concluída com sucesso.")
     except Exception as e:
         log_messages.append(f"Erro na transformação dos dados: {e}")
@@ -81,7 +87,7 @@ def load_data_to_bigquery(**kwargs):
     log_messages = ["Iniciando o carregamento dos dados para o BigQuery"]
     try:
         transformed_data = kwargs['ti'].xcom_pull(key="transformed_data", task_ids="transform_data")
-        transformed_df = pd.read_json(transformed_data)
+        transformed_df = pd.read_json(transformed_data, lines=True)
         project_id = "case-abinbev"
         dataset_id = "Medallion"
         table_id = "silver"
@@ -129,7 +135,7 @@ with DAG(
         task_id='wait_for_file_update',
         python_callable=check_file_updated,
         poke_interval=30,
-        timeout=3600,
+        timeout=600,  # Tempo máximo de espera
         mode='poke',
     )
     
