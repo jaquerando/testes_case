@@ -3,6 +3,8 @@ from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
 from airflow.sensors.python import PythonSensor
 from airflow.utils.email import send_email
+from airflow.models import DagRun
+from airflow.utils.state import State
 from datetime import datetime, timedelta
 from google.cloud import bigquery
 from google.cloud import storage
@@ -27,11 +29,26 @@ def alert_email_on_failure(context):
     """
     send_email(to=email, subject=subject, html_content=body)
 
-# Sensor para verificar se a DAG Silver foi executada e finalizada com sucesso
+# Sensor para verificar se a DAG Silver foi bem-sucedida e detectou atualização
 def check_silver_updated(**kwargs):
+    # Verifica o último estado da DAG Silver
+    dag_run = DagRun.find(dag_id='silver_dag', order_by='-execution_date', limit=1)
+    
+    if not dag_run:
+        logging.info("Nenhuma execução encontrada para a DAG Silver.")
+        return False
+
+    last_run = dag_run[0]
+    logging.info(f"Última execução da DAG Silver: {last_run.execution_date}, Estado: {last_run.state}")
+
+    if last_run.state != State.SUCCESS:
+        logging.info("A DAG Silver não foi executada com sucesso. Abortando execução da DAG Gold.")
+        return False
+
+    # Verifica o XCom para atualização
     updated = kwargs['ti'].xcom_pull(
-        dag_id='silver_dag',  # Nome da DAG Silver
-        task_ids='load_data_to_bigquery',  # Task que envia o XCom
+        dag_id='silver_dag',
+        task_ids='load_data_to_bigquery',
         key='file_updated'
     )
     if updated:
@@ -41,60 +58,55 @@ def check_silver_updated(**kwargs):
         logging.info("Recebido sinal no XCom para NÃO executar a DAG Gold: Abortando.")
         return False
 
-# Função para transformar os dados
+# Função para transformação dos dados
 def transform_to_gold(**kwargs):
     log_messages = ["Iniciando a transformação dos dados para a camada Gold"]
     try:
-        # Conecta ao GCS e lê o arquivo Parquet da camada Silver
         bucket_name = "bucket-case-abinbev"
-        silver_file_path = "data/silver/breweries_transformed/breweries_transformed.parquet"
+        file_path = "data/silver/breweries_transformed/breweries_transformed.parquet"
 
-        client = storage.Client()
-        bucket = client.get_bucket(bucket_name)
-        blob = bucket.blob(silver_file_path)
-        blob_data = blob.download_as_bytes()
+        storage_client = storage.Client()
+        bucket = storage_client.get_bucket(bucket_name)
+        blob = bucket.blob(file_path)
 
-        # Lê o Parquet como DataFrame
-        silver_df = pd.read_parquet(blob_data)
+        # Faz o download do arquivo Parquet para transformar os dados
+        with blob.open("rb") as f:
+            df = pd.read_parquet(f)
+
+        # Agrega os dados para a camada Gold
         gold_df = (
-            silver_df.groupby(["country", "state", "brewery_type"])
+            df.groupby(["country", "state", "brewery_type"])
             .size()
             .reset_index(name="total_breweries")
         )
 
-        # Salva o DataFrame resultante em Parquet no GCS
-        gold_file_path = "data/gold/breweries_aggregated.parquet"
-        gold_df.to_parquet(f"gs://{bucket_name}/{gold_file_path}", index=False)
-        kwargs['ti'].xcom_push(key="gold_file_path", value=gold_file_path)
-        log_messages.append("Transformação e carregamento para a camada Gold concluídos com sucesso.")
+        # Salva o arquivo em Parquet na camada Gold
+        output_path = "data/gold/breweries_aggregated.parquet"
+        gold_df.to_parquet(output_path, index=False)
+        kwargs['ti'].xcom_push(key="gold_file_path", value=output_path)
+        log_messages.append(f"Arquivo agregado salvo em {output_path}")
     except Exception as e:
-        log_messages.append(f"Erro na transformação dos dados para a camada Gold: {e}")
+        log_messages.append(f"Erro na transformação dos dados para Gold: {e}")
         logging.error(f"Erro: {e}")
         raise
     save_log(log_messages)
 
 # Função para carregar os dados no BigQuery
 def load_gold_to_bigquery(**kwargs):
-    log_messages = ["Iniciando o carregamento dos dados para o BigQuery"]
+    log_messages = ["Iniciando o carregamento dos dados da camada Gold para o BigQuery"]
     try:
-        gold_file_path = kwargs['ti'].xcom_pull(key="gold_file_path", task_ids="transform_to_gold")
         project_id = "case-abinbev"
         dataset_id = "Medallion"
         table_id = "gold"
+
+        file_path = kwargs['ti'].xcom_pull(key="gold_file_path", task_ids="transform_to_gold")
+        gold_df = pd.read_parquet(file_path)
+
         client = bigquery.Client()
         table_ref = client.dataset(dataset_id).table(table_id)
-
-        # Configuração de carregamento
-        job_config = bigquery.LoadJobConfig(
-            source_format=bigquery.SourceFormat.PARQUET,
-            write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
-        )
-
-        # Carregar o arquivo Parquet do GCS para o BigQuery
-        uri = f"gs://{gold_file_path}"
-        load_job = client.load_table_from_uri(uri, table_ref, job_config=job_config)
-        load_job.result()
-
+        job_config = bigquery.LoadJobConfig(write_disposition=bigquery.WriteDisposition.WRITE_APPEND)
+        job = client.load_table_from_dataframe(gold_df, table_ref, job_config=job_config)
+        job.result()
         log_messages.append(f"Dados carregados com sucesso na tabela {dataset_id}.{table_id} no BigQuery.")
     except Exception as e:
         log_messages.append(f"Erro ao carregar os dados no BigQuery: {e}")
@@ -129,13 +141,13 @@ with DAG(
     catchup=False,
 ) as dag:
 
-    # Sensor para verificar se a DAG Silver detectou atualização
+    # Sensor para verificar se a DAG Silver detectou atualização e foi bem-sucedida
     wait_for_silver_update = PythonSensor(
         task_id='wait_for_silver_update',
         python_callable=check_silver_updated,
-        poke_interval=30,  # Intervalo entre tentativas (30 segundos)
-        timeout=150,  # Máximo de 5 tentativas
-        mode='poke',  # Aguarda a condição antes de prosseguir
+        poke_interval=30,
+        timeout=150,
+        mode='poke',
     )
 
     # Task de transformação
