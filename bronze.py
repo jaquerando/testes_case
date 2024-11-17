@@ -102,12 +102,16 @@ def save_data_to_gcs(data, current_hash):
     save_log()
 
 def save_log():
-    """Salva as mensagens do log no bucket de logs."""
+    """Salva as mensagens do log no bucket de logs com charset utf-8."""
     client = storage.Client()
     log_bucket = client.get_bucket(log_bucket_name)
     log_blob = log_bucket.blob(f'logs/bronze_dag_log_{datetime.utcnow().strftime("%Y%m%d%H%M%S")}.log')
-    log_blob.upload_from_string("\n".join(log_messages), content_type="text/plain")
-    logging.info("Log salvo no bucket de logs.")
+    
+    # Define o conteúdo com charset UTF-8
+    log_blob.upload_from_string("\n".join(log_messages), content_type="text/plain; charset=utf-8")
+    
+    logging.info("Log salvo no bucket de logs com charset UTF-8.")
+
 
 # Definindo os argumentos padrão da DAG
 default_args = {
