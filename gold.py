@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from google.cloud import bigquery, storage
 import pandas as pd
 
-# Configuração de e-mail para falhas
+# Email configuration for failures
 def alert_email_on_failure(context):
     dag_id = context['dag'].dag_id
     task_id = context['task_instance'].task_id
@@ -15,18 +15,18 @@ def alert_email_on_failure(context):
     log_url = context['task_instance'].log_url
     email = "jaquerando@gmail.com"
 
-    subject = f"Alerta de Falha - DAG: {dag_id}, Task: {task_id}"
+    subject = f"Failure Alert - DAG: {dag_id}, Task: {task_id}"
     body = f"""
-    <h3>Alerta de Falha na DAG</h3>
+    <h3>DAG Failure Alert</h3>
     <p><strong>DAG:</strong> {dag_id}</p>
-    <p><strong>Task com Falha:</strong> {task_id}</p>
-    <p><strong>Data de Execução:</strong> {execution_date}</p>
-    <p><strong>URL do Log:</strong> <a href="{log_url}">{log_url}</a></p>
-    <p>Verifique o log para detalhes da falha.</p>
+    <p><strong>Failed Task:</strong> {task_id}</p>
+    <p><strong>Execution Date:</strong> {execution_date}</p>
+    <p><strong>Log URL:</strong> <a href="{log_url}">{log_url}</a></p>
+    <p>Check the log for failure details.</p>
     """
     send_email(to=email, subject=subject, html_content=body)
 
-# Função para salvar logs
+# Function to save logs
 def save_log(messages):
     try:
         client = storage.Client()
@@ -39,22 +39,22 @@ def save_log(messages):
         log_content = "\n".join(messages)
         log_blob.upload_from_string(log_content, content_type="text/plain; charset=utf-8")
         
-        logging.info(f"Log salvo com sucesso no bucket {log_bucket_name} com nome {log_blob_name}")
+        logging.info(f"Log successfully saved in bucket {log_bucket_name} with name {log_blob_name}")
     except Exception as e:
-        logging.error(f"Erro ao salvar log no bucket de logs: {e}")
+        logging.error(f"Error saving log to log bucket: {e}")
         raise
 
-# Callback para salvar logs em caso de falha
+# Callback to save logs on failure
 def save_log_on_failure(context):
     log_messages = [
-        f"Erro na DAG: {context['dag'].dag_id}",
-        f"Task que falhou: {context['task_instance'].task_id}",
-        f"Data de execução: {context['execution_date']}",
-        f"Mensagem de erro: {context['exception']}",
+        f"Error in DAG: {context['dag'].dag_id}",
+        f"Task that failed: {context['task_instance'].task_id}",
+        f"Execution date: {context['execution_date']}",
+        f"Error message: {context['exception']}",
     ]
     save_log(log_messages)
 
-# Sensor para verificar sucesso da Silver
+# Sensor to check Silver success
 def check_silver_success(**kwargs):
     signal = kwargs['ti'].xcom_pull(
         dag_id='silver_dag',
@@ -62,15 +62,15 @@ def check_silver_success(**kwargs):
         key='success_signal'
     )
     if signal:
-        logging.info("Recebido sinal de sucesso da DAG Silver.")
+        logging.info("Success signal received from Silver DAG.")
         return True
     else:
-        logging.info("Nenhum sinal de sucesso recebido da DAG Silver.")
+        logging.info("No success signal received from Silver DAG.")
         return False
 
-# Transformação dos dados para a camada Gold
+# Data transformation for the Gold layer
 def transform_to_gold(**kwargs):
-    log_messages = ["Iniciando a transformação dos dados para a camada Gold"]
+    log_messages = ["Starting data transformation for the Gold layer"]
     try:
         bucket_name = "bucket-case-abinbev"
         silver_file_path = "data/silver/breweries_transformed/breweries_transformed.parquet"
@@ -89,16 +89,16 @@ def transform_to_gold(**kwargs):
         gold_blob = bucket.blob(gold_file_path)
         gold_blob.upload_from_filename(gold_file_path)
         
-        log_messages.append("Transformação e salvamento no GCS concluídos com sucesso.")
+        log_messages.append("Transformation and saving to GCS completed successfully.")
     except Exception as e:
-        log_messages.append(f"Erro durante a transformação para a camada Gold: {e}")
-        logging.error(f"Erro: {e}")
+        log_messages.append(f"Error during transformation for the Gold layer: {e}")
+        logging.error(f"Error: {e}")
         raise
     save_log(log_messages)
 
-# Carregar dados no BigQuery
+# Load data into BigQuery
 def load_gold_to_bigquery_from_parquet(**kwargs):
-    log_messages = ["Iniciando o carregamento dos dados da camada Gold para o BigQuery"]
+    log_messages = ["Starting loading Gold layer data into BigQuery"]
     try:
         bucket_name = "bucket-case-abinbev"
         gold_file_path = "data/gold/breweries_aggregated.parquet"
@@ -115,14 +115,14 @@ def load_gold_to_bigquery_from_parquet(**kwargs):
         load_job = client.load_table_from_uri(uri, table_id, job_config=job_config)
         load_job.result()
         
-        log_messages.append(f"Dados carregados com sucesso para a tabela {table_id}.")
+        log_messages.append(f"Data successfully loaded to table {table_id}.")
     except Exception as e:
-        log_messages.append(f"Erro ao carregar os dados no BigQuery: {e}")
-        logging.error(f"Erro: {e}")
+        log_messages.append(f"Error loading data into BigQuery: {e}")
+        logging.error(f"Error: {e}")
         raise
     save_log(log_messages)
 
-# Configuração da DAG Gold
+# Gold DAG configuration
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
@@ -135,32 +135,32 @@ default_args = {
 with DAG(
     'gold_dag',
     default_args=default_args,
-    description='DAG para transformar dados da camada Silver e carregar na camada Gold no BigQuery',
-    schedule_interval=None,  # Disparada somente pela Silver
+    description='DAG to transform data from the Silver layer and load it into the Gold layer in BigQuery',
+    schedule_interval=None,  # Triggered only by Silver
     start_date=datetime(2023, 1, 1),
     catchup=False,
 ) as dag:
     
-    # Validação do sucesso da Silver
+    # Silver success validation
     wait_for_silver_success = PythonSensor(
         task_id="wait_for_silver_success",
         python_callable=check_silver_success,
         poke_interval=30,
-        timeout=150,  # Limita o poking em 5 tentativas (150 segundos no total)
+        timeout=150,  # Limits poking to 5 attempts (150 seconds total)
         mode="poke"
     )
     
-    # Transformação para Gold
+    # Transformation to Gold
     transform_to_gold_task = PythonOperator(
         task_id="transform_to_gold",
         python_callable=transform_to_gold,
     )
     
-    # Carregamento no BigQuery
+    # Loading into BigQuery
     load_gold_to_bigquery_task = PythonOperator(
         task_id="load_gold_to_bigquery_from_parquet",
         python_callable=load_gold_to_bigquery_from_parquet,
     )
     
-    # Fluxo da DAG
+    # DAG flow
     wait_for_silver_success >> transform_to_gold_task >> load_gold_to_bigquery_task
