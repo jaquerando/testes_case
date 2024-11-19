@@ -15,7 +15,10 @@ Big Query Interface:
 
 ![image](https://github.com/user-attachments/assets/cf30ebf1-388e-4ebc-918c-daeb0ee647ca)
 
+
+
 BRONZE
+
 
 Ingest raw data from the Open Brewery DB API and store it in the Bronze layer (GCS).
 
@@ -32,7 +35,6 @@ case-abinbev.Medallion.bronze
 
 Schema properties:
 
-
 ![image](https://github.com/user-attachments/assets/730bf92e-3431-4bd5-b48b-1fe95f5bbb47)
 
 Query results:
@@ -40,7 +42,9 @@ Query results:
 ![image](https://github.com/user-attachments/assets/01fe8811-fead-43d1-8de1-83db356ff2ec)
 
 
+
 SILVER
+
 
 Process data from the Bronze layer, transform it, and store it in the Silver layer (BigQuery).
 
@@ -67,7 +71,9 @@ Preview:
 ![image](https://github.com/user-attachments/assets/63bd9833-bf21-4af4-80cb-23cf337b01d2)
 
 
+
 GOLD
+
 
 Aggregate data from the Silver layer and store it in the Gold layer (BigQuery).
 
