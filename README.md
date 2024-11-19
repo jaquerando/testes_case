@@ -20,7 +20,10 @@ Up to Nov 19th, total spent was around R$ 471,35, with Cloud Composer (R$ 467,53
 
 ![image](https://github.com/user-attachments/assets/52dd34ec-2be2-442a-aebe-244c92ec6893)
 
-Budgets & alerts, Observabilityand pub sub topics are in the end of this file.
+![image](https://github.com/user-attachments/assets/e741493b-6617-40f9-9d1e-c70c7d8e13c9)
+
+
+Budgets & alerts, Observability and pub sub topics are in the end of this file.
 
 # BRONZE
 
