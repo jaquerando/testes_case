@@ -8,7 +8,7 @@ from airflow.utils.email import send_email
 from datetime import datetime, timedelta
 from google.cloud import storage
 
-# Configuração para envio de e-mail em caso de falha
+# Configuration for sending email in case of failure
 def alert_email_on_failure(context):
     dag_id = context.get('dag').dag_id
     task_id = context.get('task_instance').task_id
@@ -16,18 +16,18 @@ def alert_email_on_failure(context):
     log_url = context.get('task_instance').log_url
     email = "jaquerando@gmail.com"
 
-    subject = f"Alerta de Falha - DAG: {dag_id}, Task: {task_id}"
+    subject = f"Failure Alert - DAG: {dag_id}, Task: {task_id}"
     body = f"""
-    <h3>Alerta de Falha na DAG</h3>
+    <h3>DAG Failure Alert</h3>
     <p><strong>DAG:</strong> {dag_id}</p>
-    <p><strong>Task com Falha:</strong> {task_id}</p>
-    <p><strong>Data de Execução:</strong> {execution_date}</p>
-    <p><strong>URL do Log:</strong> <a href="{log_url}">{log_url}</a></p>
-    <p>Verifique o log para detalhes da falha.</p>
+    <p><strong>Failed Task:</strong> {task_id}</p>
+    <p><strong>Execution Date:</strong> {execution_date}</p>
+    <p><strong>Log URL:</strong> <a href="{log_url}">{log_url}</a></p>
+    <p>Check the log for failure details.</p>
     """
     send_email(to=email, subject=subject, html_content=body)
 
-# Variáveis de configuração e log
+# Configuration and log variables
 url = "https://api.openbrewerydb.org/breweries"
 bucket_name = 'bucket-case-abinbev'
 data_blob_name = 'data/bronze/breweries_raw.ndjson'
@@ -39,81 +39,81 @@ def log_message(message):
     log_messages.append(f"\n{message}\n{'-'*40}")
 
 def get_last_update_from_control_file():
-    """Lê o arquivo de controle para obter o hash ou timestamp da última atualização."""
+    """Reads the control file to get the hash or timestamp of the last update."""
     client = storage.Client()
     bucket = client.get_bucket(bucket_name)
     control_blob = bucket.blob(control_blob_name)
     
     if not control_blob.exists():
-        log_message("Arquivo de controle não encontrado. Considerando como primeira execução.")
+        log_message("Control file not found. Considering as first run.")
         return None
 
     last_update = control_blob.download_as_text().strip()
-    log_message(f"Último hash/timestamp encontrado no arquivo de controle: {last_update}")
+    log_message(f"Last hash/timestamp found in control file: {last_update}")
     return last_update
 
 def save_to_control_file(content):
-    """Atualiza o arquivo de controle com o novo hash/timestamp."""
+    """Updates the control file with the new hash/timestamp."""
     client = storage.Client()
     bucket = client.get_bucket(bucket_name)
     control_blob = bucket.blob(control_blob_name)
     control_blob.upload_from_string(content)
-    log_message(f"Arquivo de controle atualizado com: {content}")
+    log_message(f"Control file updated with: {content}")
 
 def fetch_data_and_compare():
-    """Realiza o download dos dados e compara com o último hash/timestamp armazenado."""
-    log_message("Download dos dados para verificação.")
+    """Downloads the data and compares it with the last stored hash/timestamp."""
+    log_message("Downloading data for verification.")
     response = requests.get(url)
     response.raise_for_status()
     breweries = response.json()
     
-    # Ordena os dados e converte em string antes de calcular o hash
+    # Sorts the data and converts to string before calculating the hash
     breweries_sorted_str = json.dumps(breweries, sort_keys=True)
     current_hash = hashlib.md5(breweries_sorted_str.encode('utf-8')).hexdigest()
-    log_message(f"Hash dos dados atuais baixados: {current_hash}")
+    log_message(f"Hash of current downloaded data: {current_hash}")
 
-    # Obtém o último hash/timestamp do arquivo de controle
+    # Gets the last hash/timestamp from the control file
     last_update = get_last_update_from_control_file()
 
     if last_update == current_hash:
-        log_message("Nenhuma atualização detectada ao comparar com o arquivo de controle.")
+        log_message("No updates detected when comparing with the control file.")
         save_log()
-        return False  # Dados inalterados
+        return False  # Data unchanged
 
-    # Caso haja diferença, salva os novos dados no GCS e atualiza o controle
+    # If there is a difference, saves the new data to GCS and updates the control
     save_data_to_gcs(breweries_sorted_str, current_hash)
     save_to_control_file(current_hash)
-    return True  # Dados atualizados
+    return True  # Data updated
 
 def save_data_to_gcs(data, current_hash):
-    """Faz o upload dos dados para o GCS."""
-    log_message("Atualização detectada. Realizando upload dos dados para o GCS.")
+    """Uploads the data to GCS."""
+    log_message("Update detected. Uploading data to GCS.")
     client = storage.Client()
     bucket = client.get_bucket(bucket_name)
     blob = bucket.blob(data_blob_name)
 
-    # Formata os dados para NDJSON
+    # Formats data to NDJSON
     breweries_list = json.loads(data)
     formatted_data = "\n".join([json.dumps(record) for record in breweries_list])
     blob.upload_from_string(formatted_data, content_type='application/x-ndjson')
 
-    log_message(f"Bucket de destino: {bucket_name}, Caminho do arquivo: {data_blob_name}")
-    log_message(f"Novo hash armazenado no controle: {current_hash}")
+    log_message(f"Destination bucket: {bucket_name}, File path: {data_blob_name}")
+    log_message(f"New hash stored in control: {current_hash}")
     save_log()
 
 def save_log():
-    """Salva as mensagens do log no bucket de logs com charset utf-8."""
+    """Saves log messages to log bucket with utf-8 charset."""
     client = storage.Client()
     log_bucket = client.get_bucket(log_bucket_name)
     log_blob = log_bucket.blob(f'logs/bronze_dag_log_{datetime.utcnow().strftime("%Y%m%d%H%M%S")}.log')
     
-    # Define o conteúdo com charset UTF-8
+    # Sets content with UTF-8 charset
     log_blob.upload_from_string("\n".join(log_messages), content_type="text/plain; charset=utf-8")
     
-    logging.info("Log salvo no bucket de logs com charset UTF-8.")
+    logging.info("Log saved to log bucket with UTF-8 charset.")
 
 
-# Definindo os argumentos padrão da DAG
+# Defining default DAG arguments
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
@@ -123,11 +123,11 @@ default_args = {
     'on_failure_callback': alert_email_on_failure
 }
 
-# Definindo a DAG Bronze
+# Defining the Bronze DAG
 with DAG(
     'bronze_dag',
     default_args=default_args,
-    description='DAG para verificar atualização e consumir dados da API Open Brewery DB',
+    description='DAG to check for updates and consume data from the Open Brewery DB API',
     schedule_interval='@hourly',
     start_date=datetime(2023, 1, 1),
     catchup=False,
