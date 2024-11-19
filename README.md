@@ -13,7 +13,9 @@ Orchestration: Utilizes Apache Airflow for scheduling, task dependencies, and er
 
 Big Query Interface:
 
+
 ![image](https://github.com/user-attachments/assets/cf30ebf1-388e-4ebc-918c-daeb0ee647ca)
+
 
 
 
