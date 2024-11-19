@@ -8,11 +8,9 @@ Medallion Architecture: Implements the Bronze, Silver, Gold layered approach for
 Incremental Loading: Only processes new or changed data, improving efficiency.
 Data Validation: Uses hash comparisons to ensure data integrity.
 Monitoring and Alerting: Includes logging to GCS and email alerts for proactive monitoring.
-Orchestration: Utilizes Apache Airflow for scheduling, task dependencies, and error handling.
+Orchestration: Utilizes Apache Airflow for scheduling, task dependencies, and error handling. 
 
-Big Query Interface:
-
-![image](https://github.com/user-attachments/assets/cf30ebf1-388e-4ebc-918c-daeb0ee647ca)
+# For detailed DOCKER deployment, please go to folder "DOCKER"
 
 # Total cost of pipeline = R$ 471,35
 
@@ -24,6 +22,14 @@ Up to Nov 19th, total spent was around R$ 471,35, with Cloud Composer (R$ 467,53
 
 
 Budgets & alerts, Observability and pub sub topics are in the end of this file.
+
+# Big Query Interface:
+
+![image](https://github.com/user-attachments/assets/cf30ebf1-388e-4ebc-918c-daeb0ee647ca)
+
+Datasets and tables
+
+# LAYERS OF MEDALLION ARCHTECTURE
 
 # BRONZE
 
@@ -255,5 +261,8 @@ If the policy reaches below 1, it will trigger the alert
 
 ![image](https://github.com/user-attachments/assets/22121660-b8e4-4c69-b9dc-809afd65b45d)
 
+
+
+# Glossary
 
 GCS: Google Cloud Storage
