@@ -12,6 +12,7 @@ Monitoring and Alerting: Includes logging to GCS and email alerts for proactive 
 Orchestration: Utilizes Apache Airflow for scheduling, task dependencies, and error handling.
 
 Big Query Interface:
+
 ![image](https://github.com/user-attachments/assets/cf30ebf1-388e-4ebc-918c-daeb0ee647ca)
 
 BRONZE
@@ -30,9 +31,12 @@ Table info:
 case-abinbev.Medallion.bronze
 
 Schema properties:
+
+
 ![image](https://github.com/user-attachments/assets/730bf92e-3431-4bd5-b48b-1fe95f5bbb47)
 
-Query results
+Query results:
+
 ![image](https://github.com/user-attachments/assets/01fe8811-fead-43d1-8de1-83db356ff2ec)
 
 
@@ -51,12 +55,15 @@ Table info:
 case-abinbev.Medallion.silver
 
 Schema properties:
+
 ![image](https://github.com/user-attachments/assets/ebf4ac84-73ed-4b9b-9ce2-209f8661ebbc)
 
 Partition:
+
 ![image](https://github.com/user-attachments/assets/89acfacd-a33d-4c3d-9791-6ca246b4b3b7)
 
 Preview:
+
 ![image](https://github.com/user-attachments/assets/63bd9833-bf21-4af4-80cb-23cf337b01d2)
 
 
@@ -75,9 +82,12 @@ Table info:
 case-abinbev.Medallion.gold
 
 Schema properties:
+
 ![image](https://github.com/user-attachments/assets/277b55e7-e28c-464b-b4ec-985fdffd039d)
 
-Partition: ![image](https://github.com/user-attachments/assets/7766a23c-5b2c-4270-923c-968f09932609)
+Partition: 
+
+![image](https://github.com/user-attachments/assets/7766a23c-5b2c-4270-923c-968f09932609)
 
 
 
