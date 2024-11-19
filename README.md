@@ -1,5 +1,4 @@
-# testes_case
-
+# Data pipeline summary
 
 This data pipeline ingests data from the Open Brewery DB API, performs transformations, and loads it into a data lake structured with Bronze, Silver, and Gold layers. 
 It leverages Apache Airflow for orchestration, ensuring scheduled execution, error handling, and dependency management between the stages. 
@@ -13,13 +12,11 @@ Orchestration: Utilizes Apache Airflow for scheduling, task dependencies, and er
 
 Big Query Interface:
 
-
 ![image](https://github.com/user-attachments/assets/cf30ebf1-388e-4ebc-918c-daeb0ee647ca)
 
 
 
-
-BRONZE
+# BRONZE
 
 
 Ingest raw data from the Open Brewery DB API and store it in the Bronze layer (GCS).
@@ -45,7 +42,7 @@ Query results:
 
 
 
-SILVER
+# SILVER
 
 
 Process data from the Bronze layer, transform it, and store it in the Silver layer (BigQuery).
@@ -74,8 +71,7 @@ Preview:
 
 
 
-GOLD
-
+# GOLD
 
 Aggregate data from the Silver layer and store it in the Gold layer (BigQuery).
 
@@ -98,7 +94,130 @@ Partition:
 ![image](https://github.com/user-attachments/assets/7766a23c-5b2c-4270-923c-968f09932609)
 
 
+# Creating and Configuring Google Cloud Composer Environment
 
+This is a detailed explanation of how the Google Cloud Composer environment was created, configured, and used to manage the Airflow DAGs and resources.
+
+# 1. Creating the Composer Environment
+Initiating the Environment
+A new Composer environment was created using the Google Cloud Console or the Cloud SDK.
+Command (if done via SDK):
+
+gcloud composer environments create composer-case \
+  --location=us-central1 \
+  --image-version=composer-3-airflow-2.9.3 \
+  --node-count=3
+Key settings:
+
+Region: us-central1
+Composer Version: composer-3 (Preview)
+Airflow Version: 2.9.3
+Node Count: 3 (for better scalability)
+Setting Up the Environment
+Once created, the environment was accessible through the Composer tab in Google Cloud Console. From here:
+
+The DAGs folder URL was noted (a Google Cloud Storage bucket: us-central1-composer-case-e66c77cc-bucket).
+
+# 2. Configuring the Google Cloud Storage Buckets
+DAGs Folder
+The Composer environment automatically created a bucket in Google Cloud Storage to store Airflow DAGs.
+Example structure:
+
+
+gs://us-central1-composer-case-e66c77cc-bucket/dags/
+Additional Buckets
+Separate buckets were created for raw data, transformed data, logs, and control files.
+Commands:
+
+gsutil mb -l us-central1 gs://bucket-case-abinbev/
+gsutil mb -l us-central1 gs://us-central1-composer-case-e66c77cc-bucket/
+Structure:
+
+![image](https://github.com/user-attachments/assets/a7f49657-478b-4b13-a378-2700a3b4d4eb)
+
+
+# 3. Setting Up DAGs
+DAG Development
+DAGs were developed locally. Each DAG was carefully crafted to adhere to Airflow standards. This included:
+
+Importing required libraries (airflow, google-cloud-storage, pandas, etc.).
+Configuring tasks (PythonOperator, Sensors, etc.).
+Defining dependencies using >> and <<.
+Uploading DAGs
+DAG scripts were uploaded to the Composer bucket.
+Command:
+
+gsutil cp bronze.py silver.py gold.py gs://us-central1-composer-case-e66c77cc-bucket/dags/
+After uploading, Airflow automatically detected the DAGs, and they became visible in the Airflow UI.
+
+# 4. Installing Python Dependencies
+Requirements File
+Dependencies for all DAGs were listed in a requirements.txt file. Example:
+
+google-cloud-storage
+google-cloud-bigquery
+pandas
+requests
+Installing Dependencies 
+
+The file was uploaded to the Composer environment bucket:
+
+gsutil cp requirements.txt gs://us-central1-composer-case-e66c77cc-bucket/config/requirements.txt
+Dependencies were installed using:
+
+gcloud composer environments update composer-case \
+  --location=us-central1 \
+  --update-pypi-packages-from-file=gs://us-central1-composer-case-e66c77cc-bucket/config/requirements.txt
+  
+# 5. Configuring Airflow Variables and Connections
+Setting Up Variables
+Variables for the DAGs were configured in the Airflow UI or via the Cloud SDK.
+
+gcloud composer environments run composer-case \
+  --location=us-central1 variables -- \
+  -s bucket_name bucket-case-abinbev
+  
+Setting Up Connections
+Airflow connections were set up using the Airflow UI (e.g., GCP connection for service accounts).
+
+# 6. Testing the DAGs
+Manual Triggering
+Each DAG was triggered manually in the Airflow UI to ensure proper execution.
+Logs were reviewed via the Airflow UI to confirm task success.
+
+# Monitoring and Debugging
+
+
+# 7. Setting Up Notifications
+Email Alerts
+The DAGs were configured to send email alerts in case of task failures.
+Example snippet:
+
+def alert_email_on_failure(context):
+    dag_id = context['dag'].dag_id
+    task_id = context['task_instance'].task_id
+    execution_date = context['execution_date']
+    log_url = context['task_instance'].log_url
+    email = "your-email@example.com"
+    subject = f"Failure Alert - DAG: {dag_id}, Task: {task_id}"
+    body = f"""
+    <h3>Failure in DAG</h3>
+    <p><strong>DAG:</strong> {dag_id}</p>
+    <p><strong>Task:</strong> {task_id}</p>
+    <p><strong>Execution Date:</strong> {execution_date}</p>
+    <p><strong>Log URL:</strong> <a href="{log_url}">{log_url}</a></p>
+    """
+    send_email(to=email, subject=subject, html_content=body)
+    
+Google Cloud Monitoring
+
+Alerting rules were configured for Composer health metrics to ensure proactive monitoring.
+
+# 8. Maintaining and Iterating
+Updating DAGs
+DAG updates were done locally and re-uploaded to the Composer bucket:
+
+gsutil cp updated_dag.py gs://us-central1-composer-case-e66c77cc-bucket/dags/
 
 
 GCS: Google Cloud Storage
