@@ -14,7 +14,13 @@ Big Query Interface:
 
 ![image](https://github.com/user-attachments/assets/cf30ebf1-388e-4ebc-918c-daeb0ee647ca)
 
+# Total cost of pipeline = R$ 471,35
 
+Up to Nov 19th, total spent was around R$ 471,35, with Cloud Composer (R$ 467,53) and Cloud Storage R$ 3,82.
+
+![image](https://github.com/user-attachments/assets/52dd34ec-2be2-442a-aebe-244c92ec6893)
+
+Budgets & alerts, Observabilityand pub sub topics are in the end of this file.
 
 # BRONZE
 
@@ -218,6 +224,33 @@ Updating DAGs
 DAG updates were done locally and re-uploaded to the Composer bucket:
 
 gsutil cp updated_dag.py gs://us-central1-composer-case-e66c77cc-bucket/dags/
+
+
+# PUB SUB TOPIC: Amount spent alert
+
+Topics and subscriptions about spending and environment alerts:
+
+![image](https://github.com/user-attachments/assets/9e29ab30-d8cb-4240-baf7-f8ab93490761)
+
+# Budgets & alerts
+
+![image](https://github.com/user-attachments/assets/e691be85-24af-4069-90d0-ced5ed6dc252)
+
+# Observability 
+
+![image](https://github.com/user-attachments/assets/67ddaeea-26dc-46c9-93d4-830885676029)
+
+
+Boolean threshold
+
+Healthy env: 1
+If the env is not healthy, (below 1 is the threshold)
+
+![image](https://github.com/user-attachments/assets/f02677c9-43f2-4d5b-a99d-1a5769c9f514)
+
+If the policy reaches below 1, it will trigger the alert
+
+![image](https://github.com/user-attachments/assets/22121660-b8e4-4c69-b9dc-809afd65b45d)
 
 
 GCS: Google Cloud Storage
